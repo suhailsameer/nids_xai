@@ -4,9 +4,6 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score, balanced_accuracy_score, matthews_corrcoef, roc_auc_score
-)
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
 from keras.optimizers import Adam
@@ -80,7 +77,7 @@ X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # -------------------------
-# 3. Updated DNN Model (Softmax)
+# 3. Updated DNN Model 
 # -------------------------
 
 model = Sequential([
@@ -88,12 +85,12 @@ model = Sequential([
     Dropout(0.3),
     Dense(64, activation='relu'),
     Dropout(0.3),
-    Dense(num_classes, activation='softmax') # Softmax for multiclass
+    Dense(num_classes, activation='softmax') 
 ])
 
 model.compile(
     optimizer=Adam(learning_rate=0.001),
-    loss='categorical_crossentropy', # Cross-entropy for multiclass
+    loss='categorical_crossentropy', 
     metrics=['accuracy']
 )
 
@@ -101,7 +98,7 @@ model.fit(X_train_scaled, y_train, epochs=10, batch_size=256, validation_split=0
 
 
 # -------------------------
-# 5. Evaluate & Generate Metrics Graph (Excluding AUC-ROC)
+# 5. Evaluate & Generate Metrics 
 # -------------------------
 
 # Get predicted classes
@@ -113,20 +110,19 @@ y_pred = np.argmax(y_probs, axis=1)
 confusion = confusion_matrix(y_test, y_pred)
 
 class_names = label_encoder.classes_  
-# New list of metrics excluding AUC-ROC
+# New list of metrics
 metrics_graph = ['Accuracy', 'Precision', 'Recall', 'F1', 'BACC', 'MCC']
 metric_values = {class_name: [] for class_name in class_names}
 
 print("\n--- Detailed Metrics per Class ---")
 
 for i, class_name in enumerate(class_names):
-    # One-vs-Rest Confusion Matrix components
     TP = confusion[i, i]
     FP = confusion[:, i].sum() - TP
     FN = confusion[i, :].sum() - TP
     TN = confusion.sum() - TP - FP - FN
     
-    # Mathematical definitions
+    # Accuracy, Precision, Recall, F1 Score
     Acc = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) > 0 else 0
     Precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     Recall = TP / (TP + FN) if (TP + FN) > 0 else 0
@@ -142,15 +138,15 @@ for i, class_name in enumerate(class_names):
     mcc_den = np.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))
     Matthews = mcc_num / mcc_den if mcc_den > 0 else 0
     
-    # Store metrics (matching the order of metrics_graph)
+    # Store metrics 
     metric_values[class_name] = [Acc, Precision, Recall, F1_score, Balanced_accuracy, Matthews]
 
     print(f"Metrics for {class_name:7}: Acc: {Acc:.4f}, F1: {F1_score:.4f}, MCC: {Matthews:.4f}")
 
-# --- Plotting the Performance Graph ---
+# Plotting the Performance Graph 
 data = np.array([metric_values[class_name] for class_name in class_names])
 x = np.arange(len(metrics_graph)) 
-width = 0.14  # Adjusted width for 6 bars
+width = 0.14  
 
 fig, ax = plt.subplots(figsize=(14, 7))
 
@@ -164,7 +160,7 @@ ax.set_xticks(x + width * (len(class_names) - 1) / 2)
 ax.set_xticklabels(metrics_graph)
 ax.legend(title='Attack Categories', bbox_to_anchor=(1.05, 1), loc='upper left')
 
-plt.ylim(0, 1.1) # Limits to 1.1 to make room for labels if needed
+plt.ylim(0, 1.1) 
 plt.grid(axis='y', linestyle='--', alpha=0.6)
 plt.tight_layout()
 
@@ -188,19 +184,17 @@ background = X_train_scaled[np.random.choice(X_train_scaled.shape[0], 100, repla
 explainer = shap.KernelExplainer(model.predict, background)
 shap_values = explainer.shap_values(X_test_scaled[:20])
 
-# Plot summary for the predicted class (usually the most insightful)
-# Note: shap_values[class_index]
 plt.figure(figsize=(10, 6))
 shap.summary_plot(shap_values, X_test_scaled[:20], feature_names=X_train.columns, show=False)
 plt.savefig("shap_summary_multiclass.png", bbox_inches='tight', dpi=300)
-plt.close() # Close to free up memory
+plt.close() 
 print("\nSHAP summary plot saved as 'shap_summary_multiclass.png'")
 
 # -------------------------
 # 5. Updated LIME
 # -------------------------
 
-# In Multiclass, model.predict already returns the probability distribution
+
 explainer_lime = lime_tabular.LimeTabularExplainer(
     training_data=X_train_scaled,
     feature_names=X_train.columns,
@@ -214,7 +208,7 @@ exp = explainer_lime.explain_instance(
     X_test_scaled[i], 
     model.predict, 
     num_features=10,
-    top_labels=1 # Focus on the top predicted label
+    top_labels=1 
 )
 
 exp.save_to_file("lime_multiclass.html")
