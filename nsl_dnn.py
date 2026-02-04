@@ -1,24 +1,16 @@
-# =========================
-# NSL-KDD DNN + SHAP + LIME
-# =========================
-
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
-# ML / DL
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 
 import tensorflow as tf
-# from tensorflow.keras.models import Sequential
-# from tensorflow.keras.layers import Dense, Dropout
-# from tensorflow.keras.optimizers import Adam
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
 from keras.optimizers import Adam
 
-# Explainability
 import shap
 from lime import lime_tabular
 
@@ -77,8 +69,8 @@ y_test = test_df['label']
 
 # Feature scaling
 scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
 # -------------------------
 # 3. Build DNN Model
@@ -114,30 +106,67 @@ history = model.fit(
 # 5. Evaluate Model
 # -------------------------
 
-y_pred = (model.predict(X_test) > 0.5).astype(int)
+y_probs = model.predict(X_test_scaled)
+y_pred = (y_probs > 0.5).astype(int).flatten()
 
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred))
+confusion = confusion_matrix(y_test, y_pred)
+class_names = ['Normal', 'Attack']
+metrics_list = ['Accuracy', 'Precision', 'Recall', 'F1', 'BACC', 'MCC']
+metric_values = {name: [] for name in class_names}
 
-print("Confusion Matrix:")
-print(confusion_matrix(y_test, y_pred))
+for i, name in enumerate(class_names):
+    TP = confusion[i, i]
+    FP = confusion[:, i].sum() - TP
+    FN = confusion[i, :].sum() - TP
+    TN = confusion.sum() - TP - FP - FN
+    
+    # Calculations
+    acc = (TP + TN) / (TP + TN + FP + FN)
+    pre = TP / (TP + FP) if (TP + FP) > 0 else 0
+    rec = TP / (TP + FN) if (TP + FN) > 0 else 0
+    f1  = 2 * (pre * rec) / (pre + rec) if (pre + rec) > 0 else 0
+    bacc = ((TP / (TP + FN)) + (TN / (TN + FP))) / 2
+    
+    mcc_num = (TP * TN) - (FP * FN)
+    mcc_den = np.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))
+    mcc = mcc_num / mcc_den if mcc_den > 0 else 0
+    
+    metric_values[name] = [acc, pre, rec, f1, bacc, mcc]
+
+# Plotting Metrics
+data = np.array([metric_values[name] for name in class_names])
+x = np.arange(len(metrics_list))
+width = 0.35
+
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.bar(x - width/2, data[0], width, label='Normal', color='skyblue')
+ax.bar(x + width/2, data[1], width, label='Attack', color='salmon')
+
+ax.set_ylabel('Score')
+ax.set_title('Binary Classification Performance Metrics')
+ax.set_xticks(x)
+ax.set_xticklabels(metrics_list)
+ax.legend()
+
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.savefig('binary_metrics_plot.png', bbox_inches='tight', dpi=300)
+plt.show()
 
 # -------------------------
-# 6. SHAP Explainability (Recommended)
+# 6. SHAP Explainability
 # -------------------------
+print("\nCalculating SHAP values...")
 
-# Use a smaller background for performance
-background = X_train[np.random.choice(X_train.shape[0], 200, replace=False)]
+background = X_train_scaled[np.random.choice(X_train_scaled.shape[0], 100, replace=False)]
+explainer = shap.KernelExplainer(model.predict, background)
+shap_values = explainer.shap_values(X_test_scaled[:50])
 
-explainer = shap.Explainer(
-    model,
-    background,
-    feature_names=train_df.drop('label', axis=1).columns
-)
+plt.figure(figsize=(12, 8))
 
-shap_values = explainer(X_test[:100])
-
-shap.summary_plot(shap_values, X_test[:100])
+shap.summary_plot(shap_values, X_test_scaled[:50], feature_names=X_train.columns, show=False)
+plt.savefig("binary_shap_summary.png", bbox_inches='tight', dpi=300)
+plt.close()
+print("SHAP graph saved as 'binary_shap_summary.png'")
 
 # -------------------------
 # 7. LIME Explainability
@@ -156,7 +185,7 @@ def lime_predict_fn(x):
 
 
 explainer_lime = lime_tabular.LimeTabularExplainer(
-    training_data=X_train,
+    training_data=X_train_scaled,
     feature_names=train_df.drop('label', axis=1).columns,
     class_names=['Normal', 'Attack'],
     mode='classification'
@@ -165,7 +194,7 @@ explainer_lime = lime_tabular.LimeTabularExplainer(
 # Explain one instance
 i = 5
 exp = explainer_lime.explain_instance(
-    X_test[i],
+    X_test_scaled[i],
     lime_predict_fn,
     num_features=10
 )
