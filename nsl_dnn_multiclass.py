@@ -94,7 +94,7 @@ model.compile(
     metrics=['accuracy']
 )
 
-model.fit(X_train_scaled, y_train, epochs=10, batch_size=256, validation_split=0.2, verbose=1)
+model.fit(X_train_scaled, y_train, epochs=30, batch_size=256, validation_split=0.2, verbose=1)
 
 
 # -------------------------
@@ -173,22 +173,49 @@ plt.show()
 # -------------------------
 
 
-y_pred = np.argmax(model.predict(X_test_scaled), axis=1)
+# y_pred = np.argmax(model.predict(X_test_scaled), axis=1)
 
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+# print("\nClassification Report:")
+# print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
 
-# SHAP Explainer (DeepExplainer or KernelExplainer)
-# For Multiclass, SHAP returns a list of arrays (one per class)
+# # SHAP Explainer (DeepExplainer or KernelExplainer)
+# # For Multiclass, SHAP returns a list of arrays (one per class)
+# background = X_train_scaled[np.random.choice(X_train_scaled.shape[0], 100, replace=False)]
+# explainer = shap.KernelExplainer(model.predict, background)
+# shap_values = explainer.shap_values(X_test_scaled[:20])
+
+# plt.figure(figsize=(10, 6))
+# shap.summary_plot(shap_values, X_test_scaled[:20], feature_names=X_train.columns, show=False)
+# plt.savefig("shap_summary_multiclass.png", bbox_inches='tight', dpi=300)
+# plt.close() 
+# print("\nSHAP summary plot saved as 'shap_summary_multiclass.png'")
+
+# 1. Use a more robust background
 background = X_train_scaled[np.random.choice(X_train_scaled.shape[0], 100, replace=False)]
-explainer = shap.KernelExplainer(model.predict, background)
-shap_values = explainer.shap_values(X_test_scaled[:20])
 
-plt.figure(figsize=(10, 6))
-shap.summary_plot(shap_values, X_test_scaled[:20], feature_names=X_train.columns, show=False)
-plt.savefig("shap_summary_multiclass.png", bbox_inches='tight', dpi=300)
-plt.close() 
-print("\nSHAP summary plot saved as 'shap_summary_multiclass.png'")
+# 2. Use Explainer with the predict function
+explainer = shap.Explainer(model.predict, background)
+shap_values_obj = explainer(X_test_scaled[:100])
+
+# 3. Extract the raw values
+# shap_values_obj.values will likely be (samples, features, classes)
+# We want the summary across all classes
+shap_values_matrix = shap_values_obj.values
+
+plt.figure(figsize=(12, 8))
+
+# Use the standard summary plot (not interaction)
+# Passing the array and indicating feature names correctly
+shap.summary_plot(
+    shap_values_matrix, 
+    X_test_scaled[:100], 
+    feature_names=train_df.drop('label', axis=1).columns,
+    plot_type="bar", # This shows importance across all 5 classes
+    show=False
+)
+
+plt.savefig("multiclass_shap_fixed.png", bbox_inches='tight', dpi=300)
+plt.show()
 
 # -------------------------
 # 5. Updated LIME

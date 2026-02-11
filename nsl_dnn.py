@@ -155,18 +155,29 @@ plt.show()
 # -------------------------
 # 6. SHAP Explainability
 # -------------------------
-print("\nCalculating SHAP values...")
+
 
 background = X_train_scaled[np.random.choice(X_train_scaled.shape[0], 100, replace=False)]
-explainer = shap.KernelExplainer(model.predict, background)
-shap_values = explainer.shap_values(X_test_scaled[:50])
 
-plt.figure(figsize=(12, 8))
 
-shap.summary_plot(shap_values, X_test_scaled[:50], feature_names=X_train.columns, show=False)
+explainer = shap.Explainer(model.predict, background)
+
+
+shap_values = explainer(X_test_scaled[:100])
+
+plt.figure(figsize=(12, 10))
+
+
+shap.summary_plot(
+    shap_values, 
+    X_test_scaled[:100], 
+    feature_names=train_df.drop('label', axis=1).columns,
+    show=False
+)
+
+# 5. Save the fixed plot
 plt.savefig("binary_shap_summary.png", bbox_inches='tight', dpi=300)
-plt.close()
-print("SHAP graph saved as 'binary_shap_summary.png'")
+plt.show()
 
 # -------------------------
 # 7. LIME Explainability
