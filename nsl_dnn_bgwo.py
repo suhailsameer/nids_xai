@@ -13,11 +13,30 @@ import tensorflow as tf
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
 from keras.optimizers import Adam
+import warnings
+import os
 
-from feature_selection import run_bgwo   # <-- the only new import
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Suppress TensorFlow logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+from feature_selection_4 import run_bgwo   # <-- the only new import
 
 np.random.seed(42)
 tf.random.set_seed(42)
+
+# Check if GPU is available
+print("Checking GPU availability...")
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    print("GPUs detected:")
+    for gpu in gpus:
+        print(f"- {gpu}")
+else:
+    print("No GPUs detected. Training will use the CPU.")
 
 # -------------------------
 # 1. Load & Preprocess  (identical to your existing pipeline)
