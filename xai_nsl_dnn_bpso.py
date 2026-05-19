@@ -1,41 +1,40 @@
 """
-nsl_dnn_bgwo.py
+nsl_dnn_bpso.py
 ===============
-Full 5-step feature-selection pipeline for the NSL-KDD IDS benchmark:
+Full 5-step feature-selection pipeline for the NSL-KDD IDS benchmark
+using Binary Particle Swarm Optimization (BPSO):
 
   Step 1  Train a baseline DNN on the full feature set.
   Step 2  Compute SHAP importances (DeepExplainer → GradientExplainer → Kernel).
   Step 3  Pre-filter to top-k (or 95 % cumulative importance) features.
-  Step 4  Run BGWO on the reduced candidate set.
-  Step 5  Train the final DNN on the BGWO-selected features.
-  (Bonus) LIME spot-check on misclassified test samples.
+  Step 4  Run BPSO on the reduced candidate set.
+  Step 5  Train the final DNN on the BPSO-selected features.
 
 Dependencies
 ------------
-    pip install shap lime tensorflow scikit-learn pandas numpy
+    pip install shap tensorflow scikit-learn pandas numpy matplotlib
 """
-
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    classification_report, precision_recall_curve, average_precision_score,
+    classification_report, confusion_matrix,
+    precision_recall_curve, average_precision_score,
+    ConfusionMatrixDisplay,
 )
 from sklearn.utils import compute_class_weight
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
-from xai_feature_selection import (
+from xai_feature_selection_bpso import (
     build_baseline_dnn,
     compute_shap_importances,
     shap_prefilter,
-    run_bgwo,
-    lime_spot_check,
+    run_bpso,
 )
 
 np.random.seed(42)
@@ -53,14 +52,12 @@ SHAP_METHOD           = "auto" # 'auto' | 'deep' | 'gradient' | 'kernel'
 PREFILTER_TOP_K       = 25     # set to None to use cumulative threshold instead
 PREFILTER_CUMULATIVE  = None   # e.g. 0.95; only used when PREFILTER_TOP_K is None
 
-BGWO_N_WOLVES         = 6     # increase for better exploration (slower)
-BGWO_N_ITER           = 6     # increase for more iterations (slower)
-
-LIME_N_MISCLASSIFIED  = 5      # how many misclassifications to spot-check with LIME
+BPSO_N_PARTICLES      = 10     # increase for better exploration (slower)
+BPSO_N_ITER           = 10     # increase for more iterations (slower)
 
 
 # =============================================================================
-# 1.  Load & preprocess  (identical to original pipeline)
+# 1.  Load & preprocess
 # =============================================================================
 
 COLUMNS = [
@@ -89,14 +86,14 @@ test_df["label"]  = test_df["label"].apply(lambda x: 0 if x == "normal" else 1)
 train_df.drop("difficulty", axis=1, inplace=True)
 test_df.drop("difficulty",  axis=1, inplace=True)
 
+# One-hot encoding for categorical columns (consistent across train/test)
 categorical_cols = ["protocol_type", "service", "flag"]
-# Use one-hot encoding for categorical columns (consistent across train/test)
 combined_all = pd.concat([train_df, test_df], ignore_index=True)
 combined_all = pd.get_dummies(combined_all, columns=categorical_cols)
 
 # Split back into train and test
 train_df = combined_all.iloc[: len(train_df)].copy()
-test_df = combined_all.iloc[len(train_df) :].copy()
+test_df  = combined_all.iloc[len(train_df) :].copy()
 
 feature_names = list(train_df.drop("label", axis=1).columns)
 
@@ -109,7 +106,7 @@ scaler = StandardScaler()
 X_train_full_scaled = scaler.fit_transform(X_train_full)
 X_test_scaled       = scaler.transform(X_test)
 
-# Validation split — never seen by BGWO or final DNN during feature search
+# Validation split — never seen by BPSO or final DNN during feature search
 X_train_scaled, X_val_scaled, y_train, y_val = train_test_split(
     X_train_full_scaled, y_train_full,
     test_size=0.15, random_state=42, stratify=y_train_full,
@@ -127,10 +124,9 @@ print("STEP 1  Training baseline DNN (full feature set)")
 print("=" * 60)
 
 baseline_model = build_baseline_dnn(n_features_total)
-# make sure to change epochs back to 100
 baseline_model.fit(
     X_train_scaled, y_train,
-    epochs=50,
+    epochs=100,
     batch_size=256,
     validation_data=(X_val_scaled, y_val),
     callbacks=[
@@ -138,18 +134,24 @@ baseline_model.fit(
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5),
     ],
     verbose=1,
-    class_weight={i: w for i, w in enumerate(compute_class_weight('balanced', classes=np.unique(y_train), y=y_train))},
+    class_weight={
+        i: w for i, w in enumerate(
+            compute_class_weight("balanced", classes=np.unique(y_train), y=y_train)
+        )
+    },
 )
+
 # Tune probability threshold on the validation set to maximise F1
 probs_val = baseline_model.predict(X_val_scaled).ravel()
-prec, rec, thr = precision_recall_curve(y_val, probs_val)
-f1s = 2 * prec * rec / (prec + rec + 1e-12)
-best_idx = int(np.nanargmax(f1s[:-1])) if len(f1s) > 1 else 0
-best_threshold = thr[best_idx] if len(thr) > 0 else 0.5
-print(f"[Baseline] Best val threshold={best_threshold:.3f} (val F1={f1s[best_idx]:.4f})")
+prec_v, rec_v, thr_v = precision_recall_curve(y_val, probs_val)
+f1s_v = 2 * prec_v * rec_v / (prec_v + rec_v + 1e-12)
+best_idx_v = int(np.nanargmax(f1s_v[:-1])) if len(f1s_v) > 1 else 0
+best_threshold = thr_v[best_idx_v] if len(thr_v) > 0 else 0.5
+print(f"[Baseline] Best val threshold={best_threshold:.3f}  (val F1={f1s_v[best_idx_v]:.4f})")
 
-probs_test = baseline_model.predict(X_test_scaled).ravel()
-y_pred_baseline = (probs_test >= best_threshold).astype(int).flatten()
+probs_test_baseline = baseline_model.predict(X_test_scaled).ravel()
+y_pred_baseline     = (probs_test_baseline >= best_threshold).astype(int)
+
 print("\n--- Baseline DNN Results ---")
 print(classification_report(y_test, y_pred_baseline, target_names=["normal", "attack"]))
 
@@ -167,11 +169,11 @@ bg_idx  = rng.choice(len(X_train_scaled), size=SHAP_BACKGROUND_SIZE, replace=Fal
 exp_idx = rng.choice(len(X_val_scaled),   size=SHAP_EXPLAIN_SIZE,    replace=False)
 
 shap_importances = compute_shap_importances(
-    model       = baseline_model,
-    X_background= X_train_scaled[bg_idx],
-    X_explain   = X_val_scaled[exp_idx],
-    method      = SHAP_METHOD,
-    verbose     = True,
+    model        = baseline_model,
+    X_background = X_train_scaled[bg_idx],
+    X_explain    = X_val_scaled[exp_idx],
+    method       = SHAP_METHOD,
+    verbose      = True,
 )
 
 # Print full ranked list
@@ -196,53 +198,58 @@ candidate_indices = shap_prefilter(
     verbose              = True,
 )
 
-print("Candidate features for BGWO search:")
+print("Candidate features for BPSO search:")
 for i, fi in enumerate(candidate_indices, 1):
     print(f"  {i:2d}. {feature_names[fi]}")
 
 
 # =============================================================================
-# Step 4  BGWO on the reduced candidate set
+# Step 4  BPSO on the reduced candidate set
 # =============================================================================
 
 print("\n" + "=" * 60)
-print("STEP 4  Running BGWO on SHAP-filtered candidates")
+print("STEP 4  Running BPSO on SHAP-filtered candidates")
 print("=" * 60)
 
-best_mask = run_bgwo(
-    X_train          = X_train_scaled,
-    y_train          = y_train,
-    X_val            = X_val_scaled,
-    y_val            = y_val,
-    n_wolves         = BGWO_N_WOLVES,
-    n_iter           = BGWO_N_ITER,
-    candidate_indices= candidate_indices, # <-- the new argument
-    fitness_epochs   = 8,     # lower from default 15
-    fitness_batch_size = 128, # optional
-    verbose          = True,      
+best_mask = run_bpso(
+    X_train           = X_train_scaled,
+    y_train           = y_train,
+    X_val             = X_val_scaled,
+    y_val             = y_val,
+    n_particles       = BPSO_N_PARTICLES,
+    n_iter            = BPSO_N_ITER,
+    w_max             = 0.9,
+    w_min             = 0.4,
+    c1                = 2.0,
+    c2                = 2.0,
+    v_max             = 4.0,
+    candidate_indices = candidate_indices,
+    fitness_epochs    = 15,
+    fitness_batch_size= 256,
+    verbose           = True,
 )
 
 selected_indices = np.where(best_mask == 1)[0]
 selected_names   = [feature_names[i] for i in selected_indices]
-print(f"\nBGWO selected {len(selected_indices)}/{n_features_total} features:")
+print(f"\nBPSO selected {len(selected_indices)}/{n_features_total} features:")
 for name in selected_names:
     print(f"  • {name}")
 
 
 # =============================================================================
-# Step 5  Final DNN on BGWO-selected features
+# Step 5  Final DNN on BPSO-selected features
 # =============================================================================
 
 print("\n" + "=" * 60)
-print("STEP 5  Training final DNN on BGWO-selected feature set")
+print("STEP 5  Training final DNN on BPSO-selected feature set")
 print("=" * 60)
 
-X_train_bgwo = X_train_scaled[:, selected_indices]
-X_val_bgwo   = X_val_scaled[:,   selected_indices]
-X_test_bgwo  = X_test_scaled[:,  selected_indices]
+X_train_bpso = X_train_scaled[:, selected_indices]
+X_val_bpso   = X_val_scaled[:,   selected_indices]
+X_test_bpso  = X_test_scaled[:,  selected_indices]
 
-# Merge train + val for the final DNN (BGWO search is complete)
-X_final_train = np.vstack([X_train_bgwo, X_val_bgwo])
+# Merge train + val for the final DNN (BPSO search is complete)
+X_final_train = np.vstack([X_train_bpso, X_val_bpso])
 y_final_train = np.concatenate([y_train, y_val])
 
 final_model = build_baseline_dnn(len(selected_indices))
@@ -258,9 +265,15 @@ final_model.fit(
     verbose=1,
 )
 
-y_pred_final = (final_model.predict(X_test_bgwo) > 0.5).astype(int).flatten()
+probs_test_final = final_model.predict(X_test_bpso).ravel()
+y_pred_final     = (probs_test_final > 0.5).astype(int)
 
-print("\n--- BGWO-Optimised DNN Results ---")
+
+# =============================================================================
+# Results & metrics
+# =============================================================================
+
+print("\n--- BPSO-Optimised DNN Results ---")
 print(classification_report(y_test, y_pred_final, target_names=["normal", "attack"]))
 print(f"Accuracy  : {accuracy_score(y_test, y_pred_final):.4f}")
 print(f"Precision : {precision_score(y_test, y_pred_final):.4f}")
@@ -274,60 +287,70 @@ final_f1 = f1_score(y_test, y_pred_final)
 print(f"Baseline F1 : {base_f1:.4f}")
 print(f"Final F1    : {final_f1:.4f}  (delta = {final_f1 - base_f1:+.4f})")
 
-# Plot Precision-Recall curves for baseline and final models in one figure
-try:
-    y_score_baseline = baseline_model.predict(X_test_scaled).flatten()
-except Exception:
-    # fallback if model returns shape (n,1)
-    y_score_baseline = baseline_model.predict(X_test_scaled).ravel()
+# Per-class breakdown
+cm = confusion_matrix(y_test, y_pred_final)
+print("\n--- Per-class breakdown ---")
+TN, FP, FN, TP = cm.ravel()
+for cls_name, tp, fp, fn, tn in [
+    ("Normal", TN, FN, FP, TP),
+    ("Attack", TP, FP, FN, TN),
+]:
+    cls_acc  = (tp + tn) / (tp + tn + fp + fn)
+    cls_prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    cls_rec  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    cls_f1   = (2 * cls_prec * cls_rec / (cls_prec + cls_rec)
+                if (cls_prec + cls_rec) > 0 else 0.0)
+    print(
+        f"  {cls_name:6s} | Acc={cls_acc:.4f}  Prec={cls_prec:.4f}"
+        f"  Rec={cls_rec:.4f}  F1={cls_f1:.4f}"
+    )
 
-try:
-    y_score_final = final_model.predict(X_test_bgwo).flatten()
-except Exception:
-    y_score_final = final_model.predict(X_test_bgwo).ravel()
 
-precision_b, recall_b, _ = precision_recall_curve(y_test, y_score_baseline)
-precision_f, recall_f, _ = precision_recall_curve(y_test, y_score_final)
-ap_b = average_precision_score(y_test, y_score_baseline)
-ap_f = average_precision_score(y_test, y_score_final)
+# =============================================================================
+# Plot 1 — Precision-Recall curves: Baseline vs BPSO-Optimised
+# =============================================================================
+
+precision_b, recall_b, _ = precision_recall_curve(y_test, probs_test_baseline)
+precision_f, recall_f, _ = precision_recall_curve(y_test, probs_test_final)
+ap_b = average_precision_score(y_test, probs_test_baseline)
+ap_f = average_precision_score(y_test, probs_test_final)
 
 plt.figure(figsize=(8, 6))
-plt.plot(recall_b, precision_b, label=f'Baseline (AP={ap_b:.3f})', lw=2)
-plt.plot(recall_f, precision_f, label=f'BGWO Final (AP={ap_f:.3f})', lw=2)
-plt.xlabel('Recall')
-plt.ylabel('Precision')
-plt.title('Precision-Recall Curve: Baseline vs BGWO-Optimized')
-plt.legend(loc='best')
+plt.plot(recall_b, precision_b, label=f"Baseline (AP={ap_b:.3f})", lw=2)
+plt.plot(recall_f, precision_f, label=f"BPSO Final (AP={ap_f:.3f})", lw=2)
+plt.xlabel("Recall")
+plt.ylabel("Precision")
+plt.title("Precision-Recall Curve: Baseline vs BPSO-Optimized")
+plt.legend(loc="best")
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('pr_curve_comparison.png')
+plt.savefig("pr_curve_comparison_bpso.png", dpi=150)
 plt.show()
+print("Saved: pr_curve_comparison_bpso.png")
 
 
 # =============================================================================
-# Bonus  LIME spot-check on misclassified samples
+# Plot 2 — Confusion matrices side-by-side: Baseline vs BPSO-Optimised
 # =============================================================================
 
-print("\n" + "=" * 60)
-print("BONUS  LIME spot-check on misclassified test samples")
-print("=" * 60)
+cm_baseline = confusion_matrix(y_test, y_pred_baseline)
+cm_final    = confusion_matrix(y_test, y_pred_final)
 
-misclassified = np.where(y_pred_final != y_test)[0]
-print(f"Total misclassified: {len(misclassified)}")
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-if len(misclassified) > 0:
-    check_indices = misclassified[:LIME_N_MISCLASSIFIED].tolist()
-    selected_feature_names = [feature_names[i] for i in selected_indices]
+for ax, cm_data, title in [
+    (axes[0], cm_baseline, "Baseline DNN\n(full feature set)"),
+    (axes[1], cm_final,    f"BPSO-Optimised DNN\n({len(selected_indices)} features)"),
+]:
+    disp = ConfusionMatrixDisplay(
+        confusion_matrix=cm_data,
+        display_labels=["Normal", "Attack"],
+    )
+    disp.plot(ax=ax, colorbar=False, cmap="Blues")
+    ax.set_title(title, fontsize=13)
 
-    # lime_spot_check(
-    #     model            = final_model,
-    #     X_background     = X_train_bgwo,           # background in the reduced space
-    #     X_instances      = X_test_bgwo,
-    #     feature_names    = selected_feature_names,
-    #     instance_indices = check_indices,
-    #     n_samples        = 1000,
-    #     num_features     = 10,
-    #     verbose          = True,
-    # )
-else:
-    print("No misclassifications found — perfect test set accuracy!")
+fig.suptitle("Confusion Matrices: Baseline vs BPSO-Optimized", fontsize=14, y=1.02)
+plt.tight_layout()
+plt.savefig("confusion_matrix_bpso.png", dpi=150, bbox_inches="tight")
+plt.show()
+print("Saved: confusion_matrix_bpso.png")
